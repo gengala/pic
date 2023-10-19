@@ -1,0 +1,7 @@
+numpy
+sklearn
+torch
+torchvision
+dataclasses
+networkx
+typing_extensions
