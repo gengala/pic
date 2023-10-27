@@ -1,6 +1,6 @@
 # Probabilistic Integral Circuits - PICs
 
-This repository is the official implementation of [Probabilistic Integral Circuits]().
+This repository is the official implementation of [Probabilistic Integral Circuits](https://arxiv.org/abs/2310.16986).
 
 ## Datasets
 
