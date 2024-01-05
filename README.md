@@ -15,21 +15,21 @@ This repository is the official implementation of [Probabilistic Integral Circui
 ## Training PICs
 
 ```shell
-python train_pic.py -ds mnist                   -bs 128  -as 2 -nip 128 -int trapezoidal 
-python train_pic.py -ds fashion_mnist           -bs 128  -as 2 -nip 128 -int trapezoidal 
-python train_pic.py -ds emnist -split mnist     -bs 128  -as 2 -nip 128 -int trapezoidal 
-python train_pic.py -ds emnist -split letters	-bs 128  -as 2 -nip 128 -int trapezoidal 
-python train_pic.py -ds emnist -split balanced	-bs 128  -as 2 -nip 128 -int trapezoidal 
-python train_pic.py -ds emnist -split byclass 	-bs 128  -as 2 -nip 128 -int trapezoidal
+python train_pic.py -ds mnist                   -bs 256 -nip 128 -int trapezoidal 
+python train_pic.py -ds fashion_mnist           -bs 256 -nip 128 -int trapezoidal 
+python train_pic.py -ds emnist -split mnist     -bs 256 -nip 128 -int trapezoidal 
+python train_pic.py -ds emnist -split letters	-bs 256 -nip 128 -int trapezoidal 
+python train_pic.py -ds emnist -split balanced	-bs 256 -nip 128 -int trapezoidal 
+python train_pic.py -ds emnist -split byclass 	-bs 256 -nip 128 -int trapezoidal
 ```
 
 ## Training HCLTs
 
 ```shell
-python train_hclt.py -ds mnist                  -bs 128  -as 2 -hd 128
-python train_hclt.py -ds fashion_mnist          -bs 128  -as 2 -hd 128
-python train_hclt.py -ds emnist -split mnist    -bs 128  -as 2 -hd 128
-python train_hclt.py -ds emnist -split letters	-bs 128  -as 2 -hd 128
-python train_hclt.py -ds emnist -split balanced	-bs 128  -as 2 -hd 128
-python train_hclt.py -ds emnist -split byclass 	-bs 128  -as 2 -hd 128
+python train_hclt.py -ds mnist                  -bs 256 -hd 128
+python train_hclt.py -ds fashion_mnist          -bs 256 -hd 128
+python train_hclt.py -ds emnist -split mnist    -bs 256 -hd 128
+python train_hclt.py -ds emnist -split letters	-bs 256 -hd 128
+python train_hclt.py -ds emnist -split balanced	-bs 256 -hd 128
+python train_hclt.py -ds emnist -split byclass 	-bs 256 -hd 128
 ```
