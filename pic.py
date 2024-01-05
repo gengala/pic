@@ -153,6 +153,7 @@ class PIC(nn.Module):
             [self.sum_nets(chunk) for chunk in z2d.chunk(n_chunks, 1)]).view(-1, nip, nip)
         if log_w is not None:
             sum_logits = (sum_logits - (sum_logits + log_w).logsumexp(-1, True)) + log_w
+        sum_logits = sum_logits.exp()
 
         # for the bernoulli/binomial case, no reshaping is needed
         leaf_logits = self.leaf_nets(z1d)
