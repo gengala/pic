@@ -72,7 +72,7 @@ def load_mnist(
     split: Optional[str] = 'mnist',
     flatten: Optional[bool] = True,
     transform=None,
-    dtype: torch.dtype = torch.float32
+    dtype: torch.dtype = torch.int64
 ):
     assert ds_name in MNIST_DATASETS
     if ds_name == 'mnist':
