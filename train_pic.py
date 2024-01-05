@@ -24,7 +24,8 @@ parser.add_argument('-int', '--integration',    type=str,   default='trapezoidal
 parser.add_argument('-lt',  '--leaf_type',      type=str,   default=None,           help='leaf distribution type')
 parser.add_argument('-nu',  '--n_units',        type=int,   default=64,             help='pic neural net unit num.')
 parser.add_argument('-sigma',                   type=float, default=1.0,            help='sigma ff')
-parser.add_argument('-bs',  '--batch_size',     type=int,   default=256,            help='batch size')
+parser.add_argument('-bs',  '--batch_size',     type=int,   default=256,            help='batch size during training')
+parser.add_argument('-bs2', '--batch_size2',    type=int,   default=1024,           help='batch size during valid/test')
 parser.add_argument('-as',  '--accum_steps',    type=int,   default=1,              help='number of accumulation steps')
 parser.add_argument('-nc',  '--n_chunks',       type=int,   default=1,              help='num. of chunks to avoid OOM')
 parser.add_argument('-ts',  '--train_steps',    type=int,   default=30_000,         help='num. of training steps')
@@ -70,6 +71,7 @@ else:
     qpc = DLTM(trees.TREE_DICT[dataset], 'gaussian', norm_weight=False, learnable=False)
 
 pic = PIC(qpc.tree, qpc.leaf_type, args.n_units, sigma=args.sigma, n_categories=qpc.n_categories).to(device=dev)
+print('PIC num. param: %d' % sum(param.numel() for param in pic.parameters() if param.requires_grad))
 
 
 #########################################################
@@ -88,9 +90,8 @@ for train_step in range(1, args.train_steps + 1):
     qpc.sum_logits, qpc.leaf_logits = pic(z, log_w=log_w, n_chunks=args.n_chunks)
     # evaluate qpc
     ll, batch_idx = 0, np.random.choice(len(train), args.batch_size * args.accum_steps, replace=False)
-    log_norm_constant = qpc.log_norm_constant
     for idx in np.array_split(batch_idx, args.accum_steps):
-        ll_accum = (qpc(train[idx].to(dev), has_nan=False) - log_norm_constant).mean()
+        ll_accum = (qpc(train[idx].to(dev), has_nan=False, normalize=True)).mean()
         (-ll_accum).backward(retain_graph=True if args.accum_steps > 1 else False)
         ll += float(ll_accum / args.accum_steps)
     # adam step
@@ -108,12 +109,13 @@ for train_step in range(1, args.train_steps + 1):
     if train_step % args.valid_freq == 0:
         with torch.no_grad():
             valid_lls_log.append(float(torch.cat(
-                [qpc(x.to(dev), has_nan=False, normalize=True) for x in valid.split(args.batch_size)]).mean()))
+                [qpc(x.to(dev), has_nan=False, normalize=True) for x in valid.split(args.batch_size2)]).mean()))
         if valid_lls_log[-1] > best_valid_ll:
             best_valid_ll = valid_lls_log[-1]
             torch.save(pic, log_dir + 'pic.pt')
     if train_step % 50 == 0:
-        print(train_step, dataset, 'LL: %.2f, lr: %.5f (best valid LL: %.2f)' % (ll, lr, best_valid_ll))
+        print(train_step, dataset, 'LL: %.2f, lr: %.5f (best valid LL: %.2f, bt: %.2fs,  %.2f GiB)' %
+              (ll, lr, best_valid_ll, np.mean(batch_time_log), (torch.cuda.max_memory_allocated() / 1024 ** 3)))
 tok_train = time.time()
 
 
@@ -124,9 +126,9 @@ tok_train = time.time()
 with torch.no_grad():
     pic = torch.load(log_dir + 'pic.pt').to(dev)
     qpc.sum_logits, qpc.leaf_logits = pic(z, log_w=log_w)
-    train_lls = torch.cat([qpc(x.to(dev), has_nan=False, normalize=True).cpu() for x in train.split(args.batch_size)])
-    valid_lls = torch.cat([qpc(x.to(dev), has_nan=False, normalize=True).cpu() for x in valid.split(args.batch_size)])
-    test_lls = torch.cat([qpc(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size)])
+    train_lls = torch.cat([qpc(x.to(dev), has_nan=False, normalize=True).cpu() for x in train.split(args.batch_size2)])
+    valid_lls = torch.cat([qpc(x.to(dev), has_nan=False, normalize=True).cpu() for x in valid.split(args.batch_size2)])
+    test_lls = torch.cat([qpc(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size2)])
 
 
 ##########################################################

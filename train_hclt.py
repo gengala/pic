@@ -19,7 +19,8 @@ parser.add_argument('-ds',  '--dataset',        type=str,   default=None,   help
 parser.add_argument('-split',                   type=str,   default=None,   help='dataset split for EMNIST')
 parser.add_argument('-hd',  '--hidden_dim',     type=int,   default=128,    help='ltm hidden dim')
 parser.add_argument('-lt',  '--leaf_type',      type=str,   default=None,   help='leaf distribution type')
-parser.add_argument('-bs',  '--batch_size',     type=int,   default=256,    help='batch size')
+parser.add_argument('-bs',  '--batch_size',     type=int,   default=256,    help='batch size during training')
+parser.add_argument('-bs2', '--batch_size2',    type=int,   default=1024,   help='batch size during valid/test')
 parser.add_argument('-as',  '--accum_steps',    type=int,   default=1,      help='number of accumulation steps')
 parser.add_argument('-vsp',                     type=float, default=0.05,   help='MNIST validation split percentage')
 parser.add_argument('-ts',  '--train_steps',    type=int,   default=30_000, help='number of training steps')
@@ -66,6 +67,7 @@ elif args.dataset in datasets.DEBD_DATASETS:
 else:
     train, valid, test = datasets.load_uci(args.dataset)
     hclt = DLTM(trees.TREE_DICT[dataset], 'gaussian', args.hidden_dim, em=args.em).to(device=dev)
+print('HCLT num. param: %d' % sum(param.numel() for param in hclt.parameters() if param.requires_grad))
 
 #########################################################
 ##################### training loop #####################
@@ -85,9 +87,8 @@ for train_step in range(1, args.train_steps + 1):
         ll = hclt.em_step(x=batch, step_size=lr, n_chunks=args.accum_steps).mean()
     else:
         ll, batch_idx = 0, np.random.choice(len(train), args.batch_size * args.accum_steps, replace=False)
-        log_norm_constant = hclt.log_norm_constant
         for idx in np.array_split(batch_idx, args.accum_steps):
-            ll_accum = (hclt(train[idx].to(device=dev), has_nan=False) - log_norm_constant).mean()
+            ll_accum = (hclt(train[idx].to(device=dev), has_nan=False, normalize=True)).mean()
             (-ll_accum).backward(retain_graph=True if args.accum_steps > 1 else False)
             ll += float(ll_accum / args.accum_steps)
         optimizer.step()
@@ -103,12 +104,13 @@ for train_step in range(1, args.train_steps + 1):
     if train_step % args.valid_freq == 0:
         with torch.no_grad():
             valid_lls_log.append(float(torch.cat(
-                [hclt(x.to(device=dev), has_nan=False, normalize=True) for x in valid.split(args.batch_size)]).mean()))
+                [hclt(x.to(device=dev), has_nan=False, normalize=True) for x in valid.split(args.batch_size2)]).mean()))
         if valid_lls_log[-1] > best_valid_ll:
             best_valid_ll = valid_lls_log[-1]
             torch.save(hclt, log_dir + 'hclt.pt')
     if train_step % 50 == 0:
-        print(train_step, dataset, 'LL: %.2f, lr: %.5f (best valid LL: %.2f)' % (ll, lr, best_valid_ll))
+        print(train_step, dataset, 'LL: %.2f, lr: %.5f (best valid LL: %.2f, bt: %.2fs,  %.2f GiB)' %
+              (ll, lr, best_valid_ll, np.mean(batch_time_log), (torch.cuda.max_memory_allocated() / 1024 ** 3)))
 tok_train = time.time()
 
 
@@ -118,9 +120,9 @@ tok_train = time.time()
 
 with torch.no_grad():
     hclt = torch.load(log_dir + 'hclt.pt').to(args.device)
-    train_lls = torch.cat([hclt(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size)])
-    valid_lls = torch.cat([hclt(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size)])
-    test_lls = torch.cat([hclt(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size)])
+    train_lls = torch.cat([hclt(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size2)])
+    valid_lls = torch.cat([hclt(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size2)])
+    test_lls = torch.cat([hclt(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size2)])
 
 
 ##########################################################
