@@ -12,6 +12,22 @@ class LayerIdx:
     prod_idx: torch.LongTensor
 
 
+def safelog(x: torch.Tensor, eps: Optional[float] = None) -> torch.Tensor:
+    if eps is None:
+        eps = torch.finfo(torch.get_default_dtype()).tiny
+    return torch.log(torch.clamp(x, min=eps))
+
+
+def batched_logsumexp(log_prob: torch.Tensor, sum_param: torch.Tensor) -> torch.Tensor:
+    # credits to github.com/loreloc
+    # log_prob  (batch_size, n_features, hidden_dim), this is in log  domain
+    # sum_param (n_features, hidden_dim, hidden_dim), this is in prob domain
+    max_log_prob = torch.max(log_prob, dim=-1, keepdim=True).values
+    norm_exp_log_prob = torch.exp(log_prob - max_log_prob)
+    log_prob = max_log_prob + safelog(norm_exp_log_prob.transpose(0, 1) @ sum_param.transpose(1, 2)).transpose(0, 1)
+    return log_prob
+
+
 class DLTM(torch.nn.Module):
     """ A Discrete Latent Tree Model modelled as a tensorized Probabilistic Circuit """
 
@@ -93,7 +109,7 @@ class DLTM(torch.nn.Module):
             self.layers.append(LayerIdx(
                 leaf_idx=torch.LongTensor(list(self.post_order[layer_id].keys())),
                 sum_idx=torch.LongTensor(sum(self.post_order[layer_id].values(), [])),  # try to get this (monoid) :)
-                prod_idx=torch.cat([torch.arange(len(in_len)).repeat_interleave(in_len), torch.arange(len(in_len))])))
+                prod_idx=torch.arange(len(in_len)).repeat_interleave(in_len)))
 
     @property
     def hidden_dim(self):
@@ -105,10 +121,8 @@ class DLTM(torch.nn.Module):
 
     @property
     def leaf_param(self):
-        """
-        :return: Leaf params in the prob domain
-        """
-        # when em is True, leaf_logits already corresponds to valid leaf params in the prob domain
+        # returns leaf parameters in the prob domain
+        # when em is True, leaf_logits already corresponds to valid leaf params
         if self.em and self.leaf_type == 'gaussian':
             scale = self.leaf_logits[:, 1:].clamp(min=self.min_std, max=self.max_std)
             return torch.cat([self.leaf_logits[:, :1], scale], dim=1)
@@ -126,13 +140,11 @@ class DLTM(torch.nn.Module):
 
     @property
     def sum_param(self):
-        """
-        :return: Sum params in the log domain. Handles possible pruned edges (-inf weight).
-        """
+        # returns sum parameters in the prob domain
         if self.em:
-            return self.sum_logits.log()
+            return self.sum_logits
         else:
-            return self.sum_logits.log_softmax(dim=-1) if self.norm_weight else self.sum_logits
+            return self.sum_logits.softmax(dim=-1) if self.norm_weight else self.sum_logits
 
     @property
     def log_norm_constant(self):
@@ -151,7 +163,8 @@ class DLTM(torch.nn.Module):
         elif self.leaf_type == 'binomial':
             leaf_log_prob = Binomial(self.n_categories - 1, leaf_param, validate_args=False).log_prob(x.unsqueeze(2))
         elif self.leaf_type == 'categorical':
-            leaf_log_prob = Categorical(leaf_param, validate_args=False).log_prob(x.unsqueeze(2))
+            index = x if x.dtype == torch.long else x.long()
+            leaf_log_prob = leaf_param.log().transpose(1, 2)[range(self.n_features), index]
         elif self.leaf_type == 'gaussian':
             leaf_log_prob = Normal(leaf_param[:, 0], leaf_param[:, 1], validate_args=False).log_prob(x.unsqueeze(2))
         else:
@@ -169,18 +182,19 @@ class DLTM(torch.nn.Module):
         x: torch.Tensor,
         has_nan: Optional[Union[bool, torch.Tensor]] = None,
         normalize: Optional[bool] = False,
-        return_lls: Optional[bool] = False
+        return_lls: Optional[bool] = False,
+        return_prod_lls: Optional[bool] = False
     ):
-        leaf_log_prob = self.leaf_log_prob(x, has_nan=has_nan)  # (x.size(0), self.n_features, self.hidden_dim)
-        lls = {'leaf': leaf_log_prob, 'sum': torch.zeros_like(leaf_log_prob), 'prod': torch.zeros_like(leaf_log_prob)}
-        sum_param = self.sum_param  # not a useless instruction, it may avoid the log_softmax at every layer iteration
+        leaf_log_prob = self.leaf_log_prob(x, has_nan=has_nan)  # (batch_size, n_features, hidden_dim)
+        lls = {'leaf': leaf_log_prob, 'sum': torch.zeros_like(leaf_log_prob)}
+        if return_prod_lls: lls['prod'] = torch.zeros_like(leaf_log_prob)
+        sum_param = self.sum_param  # not a useless instruction, it may avoid the softmax at every layer iteration
         for layer in self.layers:
-            # warning: DO NOT invert the order of the concatenation!
-            sum_leaf_log_prob = torch.cat([lls['sum'][:, layer.sum_idx], lls['leaf'][:, layer.leaf_idx]], dim=1)
-            prod_idx = layer.prod_idx[None, ..., None].expand(x.size(0), -1, self.hidden_dim).to(x.device)
-            prod = torch.zeros_like(lls['leaf'][:, layer.leaf_idx]).scatter_add_(1, prod_idx, sum_leaf_log_prob)
-            lls['prod'][:, layer.leaf_idx] = prod
-            lls['sum'][:, layer.leaf_idx] = (prod.unsqueeze(2) + sum_param[layer.leaf_idx]).logsumexp(dim=-1)
+            prod = torch.index_add(
+                source=lls['sum'][:, layer.sum_idx], dim=1, index=layer.prod_idx.to(x.device),
+                input=lls['leaf'][:, layer.leaf_idx])
+            lls['sum'][:, layer.leaf_idx] = batched_logsumexp(prod, sum_param[layer.leaf_idx])
+            if return_prod_lls: lls['prod'][:, layer.leaf_idx] = prod
         root_log_prob = lls['sum'][:, self.layers[-1].leaf_idx, 0] - (self.log_norm_constant if normalize else 0)
         return (root_log_prob, lls) if return_lls else root_log_prob
 
@@ -198,19 +212,19 @@ class DLTM(torch.nn.Module):
         if x is not None:
             # conditional backward
             assert n_samples is None
-            prod_prob = self.forward(x, return_lls=True)[1]['prod'].exp()
+            prod_prob = self.forward(x, return_lls=True, return_prod_lls=True)[1]['prod'].exp()
         else:
             # unconditional backward
             prod_prob = torch.ones(n_samples, self.n_features, self.hidden_dim, device=self.sum_logits.device)
 
-        sum_weights = self.sum_param.exp()
+        sum_param = self.sum_param
         sum_states = torch.full((len(prod_prob), self.n_features), -1, device=self.sum_logits.device, dtype=torch.long)
         sum_states[:, self.bfs[0][0]] = sample_or_mode(
-            Categorical(probs=sum_weights[self.bfs[0][0], 0] * prod_prob[:, self.bfs[0][0]]), mode=mpe)
+            Categorical(probs=sum_param[self.bfs[0][0], 0] * prod_prob[:, self.bfs[0][0]]), mode=mpe)
         for depth in range(1, len(self.bfs)):
             children, parents = self.bfs[depth]
             sum_states[:, children] = sample_or_mode(
-                Categorical(probs=sum_weights[children, sum_states[:, parents]] * prod_prob[:, children]), mode=mpe)
+                Categorical(probs=sum_param[children, sum_states[:, parents]] * prod_prob[:, children]), mode=mpe)
 
         if self.leaf_type == 'bernoulli':
             samples = sample_or_mode(Bernoulli(self.leaf_param[self.features, sum_states]), mode=mpe or mpe_leaf)
@@ -232,7 +246,7 @@ class DLTM(torch.nn.Module):
         self,
         x: torch.Tensor,
         step_size: float,
-        n_chunks: Optional[int] = 1,  # chunk computation to avoid OOM
+        n_chunks: Optional[int] = 1,  # chunked computation to avoid OOM
         alpha: Optional[float] = 1e-5
     ):
         root_log_prob, lls = self.forward(x, has_nan=False, return_lls=True)
