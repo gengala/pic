@@ -110,7 +110,7 @@ for train_step in range(1, args.train_steps + 1):
         with torch.no_grad():
             log_norm_const = qpc.log_norm_constant.cpu() if args.normalize else 0
             valid_lls_log.append(float(torch.cat(
-                [qpc(x.to(device=dev), has_nan=False) - log_norm_const for x in valid.split(args.batch_size)]).mean()))
+                [qpc(x.to(device=dev), has_nan=False).cpu() - log_norm_const for x in valid.split(args.batch_size)]).mean()))
         if valid_lls_log[-1] > best_valid_ll:
             best_valid_ll = valid_lls_log[-1]
             torch.save(pic, log_dir + 'pic.pt')
