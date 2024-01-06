@@ -24,8 +24,7 @@ parser.add_argument('-int', '--integration',    type=str,   default='trapezoidal
 parser.add_argument('-lt',  '--leaf_type',      type=str,   default=None,           help='leaf distribution type')
 parser.add_argument('-nu',  '--n_units',        type=int,   default=64,             help='pic neural net unit num.')
 parser.add_argument('-sigma',                   type=float, default=1.0,            help='sigma ff')
-parser.add_argument('-bs',  '--batch_size',     type=int,   default=256,            help='batch size during training')
-parser.add_argument('-bs2', '--batch_size2',    type=int,   default=1024,           help='batch size during valid/test')
+parser.add_argument('-bs',  '--batch_size',     type=int,   default=256,            help='batch size during')
 parser.add_argument('-as',  '--accum_steps',    type=int,   default=1,              help='number of accumulation steps')
 parser.add_argument('-nc',  '--n_chunks',       type=int,   default=1,              help='num. of chunks to avoid OOM')
 parser.add_argument('-ts',  '--train_steps',    type=int,   default=30_000,         help='num. of training steps')
@@ -34,6 +33,9 @@ parser.add_argument('-pat', '--patience',       type=int,   default=5,          
 parser.add_argument('-lr',                      type=float, default=0.01,           help='initial learning rate')
 parser.add_argument('-t0',                      type=int,   default=500,            help='CAWR t0, 1 for fixed lr')
 parser.add_argument('-eta_min',                 type=float, default=1e-4,           help='CAWR eta min')
+parser.set_defaults(normalize=False)
+parser.add_argument('-n',   dest='normalize',   action='store_true',                help='normalize QPC')
+parser.add_argument('-nn',  dest='normalize',   action='store_false',               help='do not normalize QPC')
 args = parser.parse_args()
 dev = args.device
 print(args)
@@ -48,7 +50,6 @@ idx = [args.dataset in x for x in [datasets.DEBD_DATASETS, datasets.MNIST_DATASE
 log_dir = 'log/pic/' + ['debd', 'mnist', 'uci', ''][np.argmax(idx)] + '/' + dataset + '/' + str(int(time.time())) + '/'
 os.makedirs(log_dir, exist_ok=True)
 json.dump(vars(args), open(log_dir + 'args.json', 'w'), sort_keys=True, indent=4)
-
 
 #########################################################
 ############ load data & instantiate QPC-PIC ############
@@ -73,7 +74,6 @@ else:
 pic = PIC(qpc.tree, qpc.leaf_type, args.n_units, sigma=args.sigma, n_categories=qpc.n_categories).to(device=dev)
 print('PIC num. param: %d' % sum(param.numel() for param in pic.parameters() if param.requires_grad))
 
-
 #########################################################
 ##################### training loop #####################
 #########################################################
@@ -91,7 +91,7 @@ for train_step in range(1, args.train_steps + 1):
     # evaluate qpc
     ll, batch_idx = 0, np.random.choice(len(train), args.batch_size * args.accum_steps, replace=False)
     for idx in np.array_split(batch_idx, args.accum_steps):
-        ll_accum = (qpc(train[idx].to(dev), has_nan=False, normalize=True)).mean()
+        ll_accum = qpc(train[idx].to(dev), has_nan=False, normalize=args.nomalize).mean()
         (-ll_accum).backward(retain_graph=True if args.accum_steps > 1 else False)
         ll += float(ll_accum / args.accum_steps)
     # adam step
@@ -108,8 +108,9 @@ for train_step in range(1, args.train_steps + 1):
         break
     if train_step % args.valid_freq == 0:
         with torch.no_grad():
+            log_norm_const = qpc.log_norm_constant if args.normalize else 0
             valid_lls_log.append(float(torch.cat(
-                [qpc(x.to(dev), has_nan=False, normalize=True) for x in valid.split(args.batch_size2)]).mean()))
+                [qpc(x.to(device=dev), has_nan=False) - log_norm_const for x in valid.split(args.batch_size)]).mean()))
         if valid_lls_log[-1] > best_valid_ll:
             best_valid_ll = valid_lls_log[-1]
             torch.save(pic, log_dir + 'pic.pt')
@@ -118,7 +119,6 @@ for train_step in range(1, args.train_steps + 1):
               (ll, lr, best_valid_ll, np.mean(batch_time_log), (torch.cuda.max_memory_allocated() / 1024 ** 3)))
 tok_train = time.time()
 
-
 ##########################################################
 ####### compute train-valid-test LLs of best model #######
 ##########################################################
@@ -126,10 +126,10 @@ tok_train = time.time()
 with torch.no_grad():
     pic = torch.load(log_dir + 'pic.pt').to(dev)
     qpc.sum_logits, qpc.leaf_logits = pic(z, log_w=log_w)
-    train_lls = torch.cat([qpc(x.to(dev), has_nan=False, normalize=True).cpu() for x in train.split(args.batch_size2)])
-    valid_lls = torch.cat([qpc(x.to(dev), has_nan=False, normalize=True).cpu() for x in valid.split(args.batch_size2)])
-    test_lls = torch.cat([qpc(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size2)])
-
+    log_norm_const = qpc.log_norm_constant if args.normalize else 0
+    train_lls = torch.cat([qpc(x.to(dev), has_nan=False).cpu() for x in train.split(args.batch_size)]) - log_norm_const
+    valid_lls = torch.cat([qpc(x.to(dev), has_nan=False).cpu() for x in valid.split(args.batch_size)]) - log_norm_const
+    test_lls = torch.cat([qpc(x.to(dev), has_nan=False).cpu() for x in test.split(args.batch_size)]) - log_norm_const
 
 ##########################################################
 ################### printing & logging ###################

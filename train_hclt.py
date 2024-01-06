@@ -19,8 +19,7 @@ parser.add_argument('-ds',  '--dataset',        type=str,   default=None,   help
 parser.add_argument('-split',                   type=str,   default=None,   help='dataset split for EMNIST')
 parser.add_argument('-hd',  '--hidden_dim',     type=int,   default=128,    help='ltm hidden dim')
 parser.add_argument('-lt',  '--leaf_type',      type=str,   default=None,   help='leaf distribution type')
-parser.add_argument('-bs',  '--batch_size',     type=int,   default=256,    help='batch size during training')
-parser.add_argument('-bs2', '--batch_size2',    type=int,   default=1024,   help='batch size during valid/test')
+parser.add_argument('-bs',  '--batch_size',     type=int,   default=256,    help='batch size')
 parser.add_argument('-as',  '--accum_steps',    type=int,   default=1,      help='number of accumulation steps')
 parser.add_argument('-vsp',                     type=float, default=0.05,   help='MNIST validation split percentage')
 parser.add_argument('-ts',  '--train_steps',    type=int,   default=30_000, help='number of training steps')
@@ -32,6 +31,9 @@ parser.add_argument('-eta_min',                 type=float, default=1e-4,   help
 parser.set_defaults(em=True)
 parser.add_argument('-em',   dest='em',         action='store_true',        help='training with EM')
 parser.add_argument('-adam', dest='em',         action='store_false',       help='training with Adam')
+parser.set_defaults(normalize=False)
+parser.add_argument('-n',   dest='normalize',   action='store_true',        help='normalize HCLT')
+parser.add_argument('-nn',  dest='normalize',   action='store_false',       help='do not normalize HCLT')
 args = parser.parse_args()
 dev = args.device
 print(args)
@@ -46,7 +48,6 @@ idx = [args.dataset in x for x in [datasets.DEBD_DATASETS, datasets.MNIST_DATASE
 log_dir = 'log/ltm/' + ['debd', 'mnist', 'uci', ''][np.argmax(idx)] + '/' + dataset + '/' + str(int(time.time())) + '/'
 os.makedirs(log_dir, exist_ok=True)
 json.dump(vars(args), open(log_dir + 'args.json', 'w'), sort_keys=True, indent=4)
-
 
 #########################################################
 ############ load data & instantiate HCLT ############
@@ -74,7 +75,7 @@ print('HCLT num. param: %d' % sum(param.numel() for param in hclt.parameters() i
 #########################################################
 
 # the optimizer won't be used if training with EM, but we make use of the scheduler anyway for the EM step size
-optimizer = torch.optim.Adam(hclt.parameters(), lr=args.lr, weight_decay=1e-5)
+optimizer = torch.optim.Adam(hclt.parameters(), lr=args.lr, weight_decay=0)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.t0, T_mult=1, eta_min=args.eta_min)
 
 train_lls_log, valid_lls_log, batch_time_log, best_valid_ll = [-np.inf], [-np.inf], [], -np.inf
@@ -88,12 +89,11 @@ for train_step in range(1, args.train_steps + 1):
     else:
         ll, batch_idx = 0, np.random.choice(len(train), args.batch_size * args.accum_steps, replace=False)
         for idx in np.array_split(batch_idx, args.accum_steps):
-            ll_accum = (hclt(train[idx].to(device=dev), has_nan=False, normalize=True)).mean()
+            ll_accum = hclt(train[idx].to(device=dev), has_nan=False, normalize=args.normalize).mean()
             (-ll_accum).backward(retain_graph=True if args.accum_steps > 1 else False)
             ll += float(ll_accum / args.accum_steps)
         optimizer.step()
         optimizer.zero_grad()
-        # if args.accum_steps > 1: torch.cuda.empty_cache()
     scheduler.step()  # scheduler can be used both for EM step size and Adam learning rate
     batch_time_log.append(time.time() - tik_batch)
     # validation & logging
@@ -103,8 +103,9 @@ for train_step in range(1, args.train_steps + 1):
         break
     if train_step % args.valid_freq == 0:
         with torch.no_grad():
+            log_norm_const = hclt.log_norm_constant if args.normalize else 0
             valid_lls_log.append(float(torch.cat(
-                [hclt(x.to(device=dev), has_nan=False, normalize=True) for x in valid.split(args.batch_size2)]).mean()))
+                [hclt(x.to(device=dev), has_nan=False) - log_norm_const for x in valid.split(args.batch_size)]).mean()))
         if valid_lls_log[-1] > best_valid_ll:
             best_valid_ll = valid_lls_log[-1]
             torch.save(hclt, log_dir + 'hclt.pt')
@@ -113,17 +114,16 @@ for train_step in range(1, args.train_steps + 1):
               (ll, lr, best_valid_ll, np.mean(batch_time_log), (torch.cuda.max_memory_allocated() / 1024 ** 3)))
 tok_train = time.time()
 
-
 ##########################################################
 ####### compute train-valid-test LLs of best model #######
 ##########################################################
 
 with torch.no_grad():
     hclt = torch.load(log_dir + 'hclt.pt').to(args.device)
-    train_lls = torch.cat([hclt(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size2)])
-    valid_lls = torch.cat([hclt(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size2)])
-    test_lls = torch.cat([hclt(x.to(dev), has_nan=False, normalize=True).cpu() for x in test.split(args.batch_size2)])
-
+    log_norm_const = hclt.log_norm_constant if args.normalize else 0
+    train_lls = torch.cat([hclt(x.to(dev), has_nan=False).cpu() for x in test.split(args.batch_size)]) - log_norm_const
+    valid_lls = torch.cat([hclt(x.to(dev), has_nan=False).cpu() for x in test.split(args.batch_size)]) - log_norm_const
+    test_lls = torch.cat([hclt(x.to(dev), has_nan=False).cpu() for x in test.split(args.batch_size)]) - log_norm_const
 
 ##########################################################
 ################### printing & logging ###################
