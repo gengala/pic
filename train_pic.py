@@ -91,7 +91,7 @@ for train_step in range(1, args.train_steps + 1):
     # evaluate qpc
     ll, batch_idx = 0, np.random.choice(len(train), args.batch_size * args.accum_steps, replace=False)
     for idx in np.array_split(batch_idx, args.accum_steps):
-        ll_accum = qpc(train[idx].to(dev), has_nan=False, normalize=args.nomalize).mean()
+        ll_accum = qpc(train[idx].to(dev), has_nan=False, normalize=args.normalize).mean()
         (-ll_accum).backward(retain_graph=True if args.accum_steps > 1 else False)
         ll += float(ll_accum / args.accum_steps)
     # adam step
@@ -108,7 +108,7 @@ for train_step in range(1, args.train_steps + 1):
         break
     if train_step % args.valid_freq == 0:
         with torch.no_grad():
-            log_norm_const = qpc.log_norm_constant if args.normalize else 0
+            log_norm_const = qpc.log_norm_constant.cpu() if args.normalize else 0
             valid_lls_log.append(float(torch.cat(
                 [qpc(x.to(device=dev), has_nan=False) - log_norm_const for x in valid.split(args.batch_size)]).mean()))
         if valid_lls_log[-1] > best_valid_ll:
@@ -126,7 +126,7 @@ tok_train = time.time()
 with torch.no_grad():
     pic = torch.load(log_dir + 'pic.pt').to(dev)
     qpc.sum_logits, qpc.leaf_logits = pic(z, log_w=log_w)
-    log_norm_const = qpc.log_norm_constant if args.normalize else 0
+    log_norm_const = qpc.log_norm_constant.cpu() if args.normalize else 0
     train_lls = torch.cat([qpc(x.to(dev), has_nan=False).cpu() for x in train.split(args.batch_size)]) - log_norm_const
     valid_lls = torch.cat([qpc(x.to(dev), has_nan=False).cpu() for x in valid.split(args.batch_size)]) - log_norm_const
     test_lls = torch.cat([qpc(x.to(dev), has_nan=False).cpu() for x in test.split(args.batch_size)]) - log_norm_const
