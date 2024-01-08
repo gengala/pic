@@ -24,6 +24,7 @@ parser.add_argument('-as',  '--accum_steps',    type=int,   default=1,      help
 parser.add_argument('-vsp',                     type=float, default=0.05,   help='MNIST validation split percentage')
 parser.add_argument('-ts',  '--train_steps',    type=int,   default=30_000, help='number of training steps')
 parser.add_argument('-vf',  '--valid_freq',     type=int,   default=250,    help='validation every n train steps')
+parser.add_argument('-pf',  '--print_freq',     type=int,   default=250,    help='print every n steps')
 parser.add_argument('-pat', '--patience',       type=int,   default=5,      help='valid ll patience')
 parser.add_argument('-lr',                      type=float, default=0.01,   help='learning rate, both for Adam and EM')
 parser.add_argument('-t0',                      type=int,   default=500,    help='sched CAWR t0, 1 for fixed lr ')
@@ -109,7 +110,7 @@ for train_step in range(1, args.train_steps + 1):
         if valid_lls_log[-1] > best_valid_ll:
             best_valid_ll = valid_lls_log[-1]
             torch.save(hclt, log_dir + 'hclt.pt')
-    if train_step % 50 == 0:
+    if train_step % args.print_freq == 0:
         print(train_step, dataset, 'LL: %.2f, lr: %.5f (best valid LL: %.2f, bt: %.2fs,  %.2f GiB)' %
               (ll, lr, best_valid_ll, np.mean(batch_time_log), (torch.cuda.max_memory_allocated() / 1024 ** 3)))
 tok_train = time.time()
