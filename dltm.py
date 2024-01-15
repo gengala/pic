@@ -260,11 +260,12 @@ class DLTM(torch.nn.Module):
             leaf_logits = ((x.unsqueeze(dim=-1) * leaf_grad).sum(dim=0) + alpha) / (leaf_grad.sum(dim=0) + 2 * alpha)
             self.leaf_logits.data = (1.0 - step_size) * self.leaf_logits + step_size * leaf_logits
         elif self.leaf_type == 'categorical':
-            cat_mask = torch.eq(x.unsqueeze(1), torch.arange(self.n_categories).to(x.device).view(1, -1, 1))
+            cat_mask = torch.eq(x.unsqueeze(1), torch.arange(self.n_categories).to(x.device).view(1, -1, 1)).float()
             leaf_logits = []
             for leaf_grad_chunk, cat_mask_chunk in zip(leaf_grad.chunk(n_chunks), cat_mask.chunk(n_chunks)):
-                leaf_logits.append((leaf_grad_chunk.unsqueeze(1) * cat_mask_chunk.unsqueeze(-1)).sum(0, keepdim=True))
-            leaf_logits = torch.cat(leaf_logits).sum(0).permute(1, 2, 0) + alpha
+                leaf_logits.append(
+                    torch.einsum('ijkl, ijkm -> jkl', leaf_grad_chunk.unsqueeze(1), cat_mask_chunk.unsqueeze(-1)))
+            leaf_logits = torch.stack(leaf_logits).sum(0).permute(1, 2, 0) + alpha
             leaf_logits = leaf_logits / (leaf_grad.sum(dim=0).unsqueeze(-1) + self.n_categories * alpha)
             self.leaf_logits.data = (1.0 - step_size) * self.leaf_logits + step_size * leaf_logits
         elif self.leaf_type == 'gaussian':
