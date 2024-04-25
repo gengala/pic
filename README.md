@@ -1,6 +1,13 @@
 # Probabilistic Integral Circuits - PICs
 
-This repository is the official implementation of [Probabilistic Integral Circuits](https://arxiv.org/abs/2310.16986).
+This repository is the official implementation of [Probabilistic Integral Circuits](https://proceedings.mlr.press/v238/gala24a.html).
+
+@InProceedings{gala24pic,
+    title={Probabilistic Integral Circuits},
+    author={Gala, Gennaro and de Campos, Cassio and Peharz, Robert and Vergari, Antonio and Quaeghebeur, Erik},
+    booktitle={Proceedings of The 27th International Conference on Artificial Intelligence and Statistics},
+    year={2024}
+}
 
 ## Datasets
 
